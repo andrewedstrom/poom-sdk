@@ -670,95 +670,79 @@ function with_physic(thing)
       velocity[2]*=friction
       
       -- check collision with world
-      local move_dir,move_len=v2_normal(velocity)
+      local move_dir,move_len,hits=v2_normal(velocity)
       
-      -- todo: epsilon?
-      if move_len>0 then
-        local hits,h={},self[3]
+      if move_len>0.001 then
+        local h=self[3]
+        hits={}
         -- todo: always check intersection w/ additional contact radius (front only?)
-        intersect_sub_sector(ss,self,move_dir,0,move_len+radius,hits)    
+        intersect_sub_sector(ss,self,move_dir,0,move_len+radius+24,hits)    
         -- fix position
         local stair_h=is_missile and 0 or 24
         for _,hit in ipairs(hits) do
-          local fix_move
-          if hit.seg then
-            -- bsp hit?
-            local ldef=hit.seg.line
-            local otherside=ldef[not hit.seg.side]
-
-            if otherside==nil or 
-              -- impassable
-              (not is_missile and ldef.flags&0x40>0) or
-              h+height>otherside.sector.ceil or 
-              h+stair_h<otherside.sector.floor then
-              fix_move=hit
-            end
-            
-            -- cross special?
-            -- todo: supports monster activated triggers
-            if self==_plyr and ldef.trigger and ldef.flags&0x10>0 then
-              ldef.trigger(self)
-            end
-          elseif hit.thing!=self then
-            -- thing hit?
-            local otherthing=hit.thing
-            local otheractor=otherthing.actor
-            if self==_plyr and otherthing.pickup then
-              -- avoid reentrancy
-              otherthing.pickup=nil
-              -- jump to pickup state
-              otherthing:jump_to(10)
-              otheractor.pickup(otherthing,self)
-            elseif otheractor.flags&0x1>0 then
-              -- solid actor?
-              fix_move=hit
-              fix_move.n=v2_normal(v2_make(self,otherthing))
-            end
-          end
-
-          if fix_move then
-            if is_missile then
-              -- fix position & velocity
-              v2_add(self,move_dir,fix_move.t-radius)
-              velocity={0,0,0}
-              -- death state
-              self:jump_to(5)
-              -- hit thing
-              local otherthing=fix_move.thing
-              if(otherthing and otherthing.hit) otherthing:hit(actor.damage,move_dir,self.owner)
-              -- stop at first wall/thing
-              break
-            else
-              local n=fix_move.n
-              local fix=(fix_move.t-radius)*v2_dot(n,move_dir)
-              -- avoid being pulled toward prop/wall
-              if fix<0 then
-                -- apply impulse (e.g. fix velocity)
-                v2_add(velocity,n,fix)
-              end
-            end
-          end
-        end
-
-        -- check triggers/bumps/...
-        if self==_plyr then
-          for _,hit in ipairs(hits) do
+          -- skip "front colliders"
+          if hit.t<move_len+radius then
+            local fix_move
             if hit.seg then
+              -- bsp hit?
               local ldef=hit.seg.line
-              -- buttons
-              if ldef.trigger and ldef.flags&0x8>0 then
-                -- use special?
-                if btn(4) then
-                  ldef.trigger()
-                else
-                  _msg="press (x) to activate"
-                end
-                -- trigger/message only closest hit
+              local otherside=ldef[not hit.seg.side]
+
+              if otherside==nil or 
+                -- impassable
+                (not is_missile and ldef.flags&0x40>0) or
+                h+height>otherside.sector.ceil or 
+                h+stair_h<otherside.sector.floor then
+                fix_move=hit
+              end
+              
+              -- cross special?
+              -- todo: supports monster activated triggers
+              if self==_plyr and ldef.trigger and ldef.flags&0x10>0 then
+                ldef.trigger(self)
+              end
+            elseif hit.thing!=self then
+              -- thing hit?
+              local otherthing=hit.thing
+              local otheractor=otherthing.actor
+              if self==_plyr and otherthing.pickup then
+                -- avoid reentrancy
+                otherthing.pickup=nil
+                -- jump to pickup state
+                otherthing:jump_to(10)
+                otheractor.pickup(otherthing,self)
+              elseif otheractor.flags&0x1>0 then
+                -- solid actor?
+                fix_move=hit
+                fix_move.n=v2_normal(v2_make(self,otherthing))
+              end
+            end
+
+            if fix_move then
+              if is_missile then
+                -- fix position & velocity
+                v2_add(self,move_dir,fix_move.t-radius)
+                velocity={0,0,0}
+                -- death state
+                self:jump_to(5)
+                -- hit thing
+                local otherthing=fix_move.thing
+                if(otherthing and otherthing.hit) otherthing:hit(actor.damage,move_dir,self.owner)
+                -- stop at first wall/thing
                 break
+              else
+                local n=fix_move.n
+                local fix=(fix_move.t-radius)*v2_dot(n,move_dir)
+                -- avoid being pulled toward prop/wall
+                if fix<0 then
+                  -- apply impulse (e.g. fix velocity)
+                  v2_add(velocity,n,fix)
+                end
               end
             end
           end
         end
+
         -- apply move
         v2_add(self,velocity)
               
@@ -772,6 +756,32 @@ function with_physic(thing)
         find_ssector_thick(_bsp,self,radius,subs)
         self.subs=subs
       end
+      -- triggers?
+      -- check triggers/bumps/...
+      if self==_plyr then
+        if not hits then
+          local angle=self.angle
+          hits={}
+          intersect_sub_sector(ss,self,{cos(angle),-sin(angle)},0,radius+24,hits)    
+        end
+        for _,hit in ipairs(hits) do
+          if hit.seg then
+            local ldef=hit.seg.line
+            -- buttons
+            if ldef.trigger and ldef.flags&0x8>0 then
+              -- use special?
+              if btn(🅾️) then
+                ldef.trigger()
+              else
+                _msg="press 🅾️ to activate"
+              end
+              -- trigger/message only closest hit
+              break
+            end
+          end
+        end
+      end
+
       -- gravity
       if not is_missile then
         local dz=velocity[3]
@@ -890,7 +900,7 @@ function attach_plyr(thing,actor,skill)
       -- cursor+x: weapon switch+rotate
       -- wasd: fwd+strafe
       -- o: fire
-      if btn(4) then
+      if btn(🅾️) then
         if(btn(0)) dx=1
         if(btn(1)) dx=-1
 
@@ -1029,7 +1039,13 @@ end
 -->8
 -- game states
 function next_state(fn,...)
-  _update_state,_draw_state=fn(...)
+  local u,d,i=fn(...)
+  do_async(function()
+    -- init function?
+    -- usefull for "breaking" state transitions
+    if(i) i()
+    _update_state,_draw_state=u,d
+  end)
 end
 
 function menu_state()
@@ -1047,10 +1063,6 @@ function menu_state()
     "uLTRA-vIOLENCE"
   },1
   
-  cls()
-  -- seed line
-  memset(0x7fc0,0x77,64)
-
   return 
     -- update
     function()
@@ -1088,6 +1100,14 @@ function menu_state()
           pset((x+rnd(2)-1)&127,y-1,rnd()>0.5 and colors[c] or c)
         end
       end
+    end,
+    -- init
+    function()
+      cls()
+      pal()
+      reload()
+      -- seed line
+      memset(0x7fc0,0x77,64)
     end
 end
 
@@ -1150,6 +1170,10 @@ function gameover_state(pos,angle,target,h)
       end
       _cam:track(pos,angle,pos[3]+h)
       _cam:update()
+
+      if btnp(4) or btnp(5) then
+        next_state(slicefade_state)
+      end
     end,
     -- draw
     function()
@@ -1158,8 +1182,35 @@ function gameover_state(pos,angle,target,h)
       -- set screen palette
       -- pal({140,1,139,3,4,132,133,7,6,134,5,8,2,9,10},1)
       memcpy(0x5f10,0x4400,16)
+    end
+end
 
-      -- todo: gameover message
+function slicefade_state()
+  local ttl,r,h,rr=30,{},{},0
+  for i=0,127 do
+    rr=lerp(rr,rnd(0.1),0.3)
+    r[i],h[i]=0.1+rr,0
+  end
+  return 
+    -- update
+    function()
+      ttl-=1
+      if ttl<0 or btnp(4) or btnp(5) then
+        next_state(menu_state)
+      end
+    end,
+    -- draw
+    function()
+      cls()
+      for i,r in pairs(r) do
+        h[i]=lerp(h[i],129,r)
+        sspr(i,0,1,128,i,h[i],1,128)
+      end
+    end,
+    -- init
+    function()
+      -- copy screen to spritesheet
+      memcpy(0x0,0x6000,8192)
     end
 end
 
@@ -1190,13 +1241,11 @@ function _update()
 
   _update_state()
 
-  -- 
-  _msg=nil
-
 end
 
 function _draw()
   _draw_state()
+  _msg=nil
 end
 
 -->8
@@ -1420,6 +1469,11 @@ function unpack_special(special,line,sectors,actors)
       for _,sector in pairs(target_sectors) do
         sector.lightlevel=lightlevel
       end
+    end)
+  elseif special==243 then
+    -- exit level
+    return trigger_async(function()
+      assert(false)
     end)
   end
 end
@@ -1700,7 +1754,7 @@ function unpack_map(skill)
       function()
         local ammouse,ammotype=item.ammouse,item.ammotype
         return function(weapon)
-          if btn(5) then
+          if btn(❎) then
             local owner=weapon.owner
             local inventory=owner.inventory
             local newqty=inventory[ammotype]-ammouse

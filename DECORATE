@@ -87,7 +87,7 @@ actor YellowCard:Key 6
  States
  {
   Spawn:
-   GKEY A -1
+   RKEY A -1
    Stop
  }
 }
@@ -100,7 +100,7 @@ actor Column 2028
  States
  {
 	Spawn:
-	 LIGH A -1
+	 COLU A -1
 	 Stop
  }
 }
@@ -189,26 +189,6 @@ actor PlasmaBall : Projectile 9998
 		PLSE E 4 Bright
 		Stop
 	}
-}
-
-actor Rocket : Projectile 9997
-{
-  Radius 11
-  Height 8
-  Speed 20
-  Damage 20
-  +MISSILE
-  States
-  {
-  Spawn:
-    MISL A 120 Bright
-	// blast on TTL
-  Death:
-    MISL B 8 Bright
-    MISL C 6 Bright
-    MISL D 4 Bright
-    Stop
-  }
 }
 
 actor Cell : Ammo 2047
@@ -326,27 +306,6 @@ actor PlasmaRifle : Weapon 2004
 			Goto Ready
 		Ready:
 			PLSG A 1 A_WeaponReady;
-			Loop
-	}
-}
-
-actor RocketLauncher : Weapon 2003
-{
-	AmmoUse 1
-	AmmoGive 2
-	AmmoType "RocketAmmo"
-	SlotNumber 6
-	States {
-		Spawn:
-			LAUN A 5
-			LAUN A 5 Bright
-			Loop
-		Fire:
-			MISG A 8 A_FireProjectile("Rocket");
-			MISG B 12
-			Goto Ready
-		Ready:
-			MISG A 1 A_WeaponReady;
 			Loop
 	}
 }
