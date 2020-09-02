@@ -3,9 +3,9 @@ version 29
 __lua__
 
 -- globals
-local _bsp,_cam,_plyr,_things,_sprite_cache
+local _bsp,_cam,_plyr,_things,_sprite_cache,_actors
 local _onoff_textures={}
-local _ambientlight,_znear=0,16
+local _ambientlight,_znear,_ammo_factor=0,16,1
 local _msg
 
 --local k_far,k_near=0,2
@@ -188,6 +188,7 @@ function make_sprite_cache(tiles,maxlen)
 	end
 	
 	return {
+    clear=function()  len,index,first,last=0,{} end,
 		use=function(self,id)
 			local entry=index[id]
 			if entry then
@@ -505,7 +506,8 @@ function intersect_sub_sector(segs,p,d,tmin,tmax,res,skipthings)
     for _,thing in pairs(_things) do
       local actor=thing.actor
       -- not a missile
-      if actor.flags&0x4==0 and thing.subs[segs] then
+      -- not dead
+      if actor.flags&0x4==0 and not thing.dead and thing.subs[segs] then
         -- overflow 'safe' coordinates
         local m,r={(px-thing[1])>>8,(pz-thing[2])>>8},actor.radius>>8
         local b,c=v2_dot(m,d),v2_dot(m,m)-r*r
@@ -650,7 +652,7 @@ local _sector_dmg={
 function with_physic(thing)
   local actor=thing.actor
   -- actor properties
-  local height,radius,mass,is_missile=actor.height,actor.radius,2*actor.mass,actor.flags&0x4==4
+  local height,radius,mass,is_missile,is_player=actor.height,actor.radius,2*actor.mass,actor.flags&0x4==4,actor.id==1
   local ss,friction=thing.ssector,is_missile and 0.9967 or 0.9062
   -- init inventory
   local forces,velocity={0,0},{0,0,0}
@@ -675,8 +677,8 @@ function with_physic(thing)
       if move_len>0.001 then
         local h=self[3]
         hits={}
-        -- todo: always check intersection w/ additional contact radius (front only?)
-        intersect_sub_sector(ss,self,move_dir,0,move_len+radius+24,hits)    
+        -- player: check intersection w/ additional contact radius
+        intersect_sub_sector(ss,self,move_dir,0,move_len+radius+(is_player and 24 or 0),hits)    
         -- fix position
         local stair_h=is_missile and 0 or 24
         for _,hit in ipairs(hits) do
@@ -698,14 +700,14 @@ function with_physic(thing)
               
               -- cross special?
               -- todo: supports monster activated triggers
-              if self==_plyr and ldef.trigger and ldef.flags&0x10>0 then
+              if is_player and ldef.trigger and ldef.flags&0x10>0 then
                 ldef.trigger(self)
               end
             elseif hit.thing!=self then
               -- thing hit?
               local otherthing=hit.thing
               local otheractor=otherthing.actor
-              if self==_plyr and otherthing.pickup then
+              if is_player and otherthing.pickup then
                 -- avoid reentrancy
                 otherthing.pickup=nil
                 -- jump to pickup state
@@ -758,7 +760,7 @@ function with_physic(thing)
       end
       -- triggers?
       -- check triggers/bumps/...
-      if self==_plyr then
+      if is_player then
         if not hits then
           local angle=self.angle
           hits={}
@@ -1048,47 +1050,68 @@ function next_state(fn,...)
   end)
 end
 
-function menu_state()
-  local colors,skills,skill,loading={
-    [7]=10,
-    [10]=9,
-    [9]=8,
-    [8]=2,
-    [2]=1,
-    [1]=0},
+-- level selection
+function levelmenu_state()
+  return make_menu(
+    "wHICH ePISODE?:",
+    _maps_label,
+    function(map_id)
+      next_state(skillmenu_state,map_id)
+    end)
+end
+
+-- skill selection
+function skillmenu_state(map_id)
+  return make_menu(
+  "sELECT sKILL lEVEL:",
   {
     "i AM TOO YOUNG TO DIE",
     "hEY, NOT TOO ROUGH",
     "hURT ME PLENTY",
     "uLTRA-vIOLENCE"
-  },1
+  },function(skill)
+    do_async(function()
+      -- clear seed
+      memset(0x7fc0,0,64)
+      wait_async(20)
+      next_state(play_state,skill,map_id)
+    end)
+  end)
+end
+
+function make_menu(title,options,fn)
+  local colors,sel,loading={
+    [7]=10,
+    [10]=9,
+    [9]=8,
+    [8]=2,
+    [2]=1,
+    [1]=0},1
   
   return 
     -- update
     function()
-      if(btnp(2)) skill-=1
-      if(btnp(3)) skill+=1
+      if(btnp(2)) sel-=1
+      if(btnp(3)) sel+=1
       if not loading and (btnp(5) or btnp(4)) then
         -- avoid reentrancy
         loading=true
-        do_async(function()
-          -- clear seed
-          memset(0x7fc0,0,64)
-          wait_async(20)
-          next_state(play_state,skill)
-        end)
+        -- callback
+        fn(sel)
       end
-      skill=mid(skill,1,#skills)
+      sel=mid(sel,1,#options)
     end,
     -- draw
     function()
       rectfill(0,0,127,99,0)
       spr(160,0,14,16,4)
+      
+      printb(title,30,50,4,2)
 
-      for i,txt in pairs(skills) do 
-        local y=40+i*10
+      for i,txt in pairs(options) do 
+        local y=50+i*10
         printb(txt,30,y,9,4)
-        if(skill==i) sspr(flr(time()%2)*10,112,10,10,18,y-1,10,10)
+        if(sel==i) sspr(flr(time()%2)*10,112,10,10,18,y-1,10,10)
       end
 
       -- doom fire!
@@ -1111,11 +1134,20 @@ function menu_state()
     end
 end
 
-function play_state(skill)
+function play_state(skill,map_id)
   cls()
 
-  local root,thingdefs,tiles=unpack_map(skill)
-  _bsp,_things,_sprite_cache=root,{},make_sprite_cache(tiles,32)
+  -- not already loaded?
+  if not _actors then
+    _actors,_sprite_cache=unpack_actors()
+  end
+  _sprite_cache:clear()
+
+  -- ammo scaling factor
+  _ammo_factor=split"2,1,1,1"[skill]
+  _bsp,thingdefs=unpack_map(skill,_actors,_maps_cart[map_id],_maps_offset[map_id])
+  -- reset active things
+  _things,_plyr={}
 
   -- attach behaviors to things
   for _,thingdef in pairs(thingdefs) do 
@@ -1172,7 +1204,7 @@ function gameover_state(pos,angle,target,h)
       _cam:update()
 
       if btnp(4) or btnp(5) then
-        next_state(slicefade_state)
+        next_state(slicefade_state,levelmenu_state)
       end
     end,
     -- draw
@@ -1185,7 +1217,8 @@ function gameover_state(pos,angle,target,h)
     end
 end
 
-function slicefade_state()
+function slicefade_state(...)
+  local args=pack(...)
   local ttl,r,h,rr=30,{},{},0
   for i=0,127 do
     rr=lerp(rr,rnd(0.1),0.3)
@@ -1196,7 +1229,7 @@ function slicefade_state()
     function()
       ttl-=1
       if ttl<0 or btnp(4) or btnp(5) then
-        next_state(menu_state)
+        next_state(unpack(args))
       end
     end,
     -- draw
@@ -1217,7 +1250,7 @@ end
 -->8
 -- game loop
 function _init()
-  next_state(menu_state)
+  next_state(levelmenu_state)
 end
 
 function _update()
@@ -1473,7 +1506,9 @@ function unpack_special(special,line,sectors,actors)
   elseif special==243 then
     -- exit level
     return trigger_async(function()
-      assert(false)
+      -- return to main menu
+      -- todo: go to next level or end game
+      next_state(slicefade_state,levelmenu_state)
     end)
   end
 end
@@ -1483,7 +1518,7 @@ function unpack_texture()
   return tex!=0 and tex
 end
 
-function unpack_map(skill)
+function unpack_actors()
   -- jump to data cart
   cart_id,mem=0,0
   reload(0,0,0x4300,mod_name.."_"..cart_id..".p8")
@@ -1510,7 +1545,7 @@ function unpack_map(skill)
   end)
   
   -- inventory & things
-  local things,actors={},{}
+  local actors={}
   local unpack_actor_ref=function()
     return actors[unpack_variant()]
   end
@@ -1584,7 +1619,7 @@ function unpack_map(skill)
     }
 
     -- actor properties + skill ammo factor
-    local ammo_factor,properties,properties_factory=({2,1,1,1})[skill],unpack_fixed(),{
+    local properties,properties_factory=unpack_fixed(),{
       {0x0.0001,"health"},
       {0x0.0002,"armor"},
       {0x0.0004,"amount"},
@@ -1640,13 +1675,13 @@ function unpack_map(skill)
       -- ammo family
       local ammotype=unpack_actor_ref()
       item.pickup=function(thing,target)
-        pickup(target.inventory,ammotype,ammo_factor*item.amount)
+        pickup(target.inventory,ammotype,_ammo_factor*item.amount)
       end
     elseif kind==2 then
       -- weapon
       local ammogive,ammotype=unpack_variant(),item.ammotype
       item.pickup=function(thing,target)
-        pickup(target.inventory,ammotype,ammo_factor*ammogive,ammotype.maxamount)
+        pickup(target.inventory,ammotype,_ammo_factor*ammogive,ammotype.maxamount)
 
         target:attach_weapon(thing)
         -- remove from things
@@ -1877,9 +1912,15 @@ function unpack_map(skill)
     -- register
     actors[id]=item
   end)
+  return actors,make_sprite_cache(tiles,32)
+end
 
-  -----------------------------------
-  -- unpack level data (geometry + things)
+-- unpack level data (geometry + things)
+function unpack_map(skill,actors,map_cart_id,map_cart_offset)
+  -- jump to map cart
+  cart_id,mem=map_cart_id,map_cart_offset
+  reload(0,0,0x4300,mod_name.."_"..cart_id..".p8")
+  
   -- sectors
   local sectors,sides,verts,lines,sub_sectors,all_segs,nodes={},{},{},{},{},{},{}
   unpack_array(function(i)
@@ -2025,6 +2066,7 @@ function unpack_map(skill)
   end)
 
   -- things
+  local things={}
   unpack_array(function()
     local flags,id,x,y=mpeek(),unpack_variant(),unpack_fixed(),unpack_fixed()
     if flags&(0x10<<(skill-1))!=0 then
@@ -2043,5 +2085,5 @@ function unpack_map(skill)
 
   -- restore main cart
   reload()
-  return nodes[#nodes],things,tiles
+  return nodes[#nodes],things
 end
